@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GitHub Pages Publisher</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            padding: 20px;
+            max-width: 800px;
+            margin: 0 auto;
+            line-height: 1.6;
+        }
+
+        h1, h2 {
+            color: #24292e;
+        }
+
+        input {
+            padding: 10px;
+            margin: 10px 0;
+            width: 100%;
+            max-width: 400px;
+            border: 1px solid #d1d5da;
+            border-radius: 6px;
+            box-sizing: border-box;
+        }
+
+        button {
+            padding: 10px 20px;
+            background-color: #2ea44f;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: background-color 0.2s;
+            margin: 10px 5px;
+        }
+
+        button:hover {
+            background-color: #22863a;
+        }
+
+        button.secondary {
+            background-color: #f3f4f6;
+            color: #24292e;
+        }
+
+        button.secondary:hover {
+            background-color: #e1e4e8;
+        }
+
+        #auth-section, #repo-section {
+            background: #f6f8fa;
+            padding: 20px;
+            border-radius: 6px;
+            border: 1px solid #e1e4e8;
+            margin-bottom: 20px;
+        }
+
+        #error-message, #status-message {
+            margin: 15px 0;
+            padding: 10px;
+            border-radius: 6px;
+        }
+
+        #error-message {
+            color: #d73a49;
+            background-color: #ffebee;
+        }
+
+        .success {
+            color: #22863a;
+            background-color: #f0fff4;
+        }
+
+        .info {
+            color: #0366d6;
+            background-color: #f1f8ff;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .instructions {
+            font-size: 0.9em;
+            color: #586069;
+            margin-top: 5px;
+        }
+
+        .token-info {
+            font-size: 0.8em;
+            color: #586069;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div id="auth-section">
+        <h1>GitHub Pages Publisher</h1>
+        <p>Publish your website directly to GitHub Pages</p>
+        
+        <label for="github-token">GitHub Personal Access Token:</label>
+        <input type="password" id="github-token" placeholder="Enter your GitHub PAT">
+        <p class="token-info">Need a token? Create one at <a href="https://github.com/settings/tokens" target="_blank">GitHub Settings</a> with "repo" permissions.</p>
+        
+        <button id="signin-btn" onclick="authenticate()">Sign In</button>
+        <p id="error-message" class="hidden"></p>
+    </div>
+    
+    <div id="repo-section" class="hidden">
+        <h2>Create a New Repository</h2>
+        <label for="repo-name">Repository Name:</label>
+        <input type="text" id="repo-name" placeholder="my-website">
+        <p class="instructions">This will create a public repository under your account.</p>
+        
+        <button onclick="createRepo()">Create Repository</button>
+        <button class="secondary" onclick="signOut()">Sign Out</button>
+        
+        <h2>Deploy as GitHub Pages</h2>
+        <p class="instructions">After creating a repository, you can deploy it as a GitHub Pages site.</p>
+        <button id="deploy-btn" onclick="deploySite()" disabled>Deploy Website</button>
+        
+        <p id="status-message" class="hidden"></p>
+    </div>
+
+    <script>
+        // Check if the token is already in localStorage on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            const token = localStorage.getItem("github-token");
+            if (token) {
+                document.getElementById('github-token').value = token;
+                authenticate(true); // Auto-authenticate if token is found
+            }
+        });
+
+        // Authenticate with GitHub API using a Personal Access Token
+        function authenticate(auto = false) {
+            const token = auto ? localStorage.getItem("github-token") : document.getElementById('github-token').value.trim();
+            const errorElement = document.getElementById('error-message');
+            
+            if (!token) {
+                showError("Please enter a valid GitHub token!");
+                return;
+            }
+
+            // Show loading state
+            const signinBtn = document.getElementById('signin-btn');
+            signinBtn.disabled = true;
+            signinBtn.textContent = 'Authenticating...';
+
+            // Test the token by making an API request to get the user data
+            fetch('https://api.github.com/user', {
+                headers: {
+                    'Authorization': `token ${token}`,
+                    'Accept': 'application/vnd.github.v3+json'
+                }
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(response.status === 401 ? 'Invalid credentials' : 'API request failed');
+                }
+                return response.json();
+            })
+            .then(data => {
+                if (data.message && data.message.includes('Bad credentials')) {
+                    throw new Error('Invalid GitHub Token');
+                }
+                
+                localStorage.setItem("github-token", token);  // Save token in localStorage
+                document.getElementById('auth-section').classList.add('hidden');
+                document.getElementById('repo-section').classList.remove('hidden');
+                showStatus(`Authenticated as ${data.login}`, 'success');
+            })
+            .catch(error => {
+                localStorage.removeItem("github-token");
+                showError(error.message === 'Invalid GitHub Token' ? 
+                    "Invalid GitHub Token! Please check your token and try again." : 
+                    "Error authenticating. Please try again.");
+            })
+            .finally(() => {
+                signinBtn.disabled = false;
+                signinBtn.textContent = 'Sign In';
+            });
+        }
+
+        // Create a new repository
+        function createRepo() {
+            const token = localStorage.getItem("github-token");
+            const repoName = document.getElementById('repo-name').value.trim();
+            const statusElement = document.getElementById('status-message');
+            
+            if (!repoName) {
+                showError("Please enter a repository name!", statusElement);
+                return;
+            }
+
+            if (!/^[a-zA-Z0-9_-]+$/.test(repoName)) {
+                showError("Repository name can only contain letters, numbers, hyphens, and underscores.", statusElement);
+                return;
+            }
+
+            // Show loading state
+            const createBtn = document.querySelector('#repo-section button');
+            createBtn.disabled = true;
+            createBtn.textContent = 'Creating...';
+            showStatus(`Creating repository "${repoName}"...`, 'info', statusElement);
+
+            // GitHub API to create a new repository
+            fetch('https://api.github.com/user/repos', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `token ${token}`,
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/vnd.github.v3+json'
+                },
+                body: JSON.stringify({
+                    name: repoName,
+                    description: 'A simple GitHub Pages site',
+                    private: false,
+                    auto_init: true  // Create with initial commit
+                })
+            })
+            .then(response => {
+                if (!response.ok) {
+                    return response.json().then(errData => {
+                        throw new Error(errData.message || 'Failed to create repository');
+                    });
+                }
+                return response.json();
+            })
+            .then(data => {
+                showStatus(`Repository "${repoName}" created successfully!`, 'success', statusElement);
+                document.getElementById('deploy-btn').disabled = false;
+                return data.name; // Return repo name for chaining
+            })
+            .then(repoName => {
+                // Wait a moment before attempting to enable Pages
+                return new Promise(resolve => setTimeout(() => resolve(repoName), 2000));
+            })
+            .then(repoName => {
+                // Automatically try to enable Pages
+                return enableGitHubPages(repoName);
+            })
+            .catch(error => {
+                showError(`Error creating repository: ${error.message}`, statusElement);
+            })
+            .finally(() => {
+                createBtn.disabled = false;
+                createBtn.textContent = 'Create Repository';
+            });
+        }
+
+        // Enable GitHub Pages for a repository
+        function enableGitHubPages(repoName) {
+            const token = localStorage.getItem("github-token");
+            const statusElement = document.getElementById('status-message');
+            
+            showStatus(`Enabling GitHub Pages for "${repoName}"...`, 'info', statusElement);
+
+            return fetch(`https://api.github.com/repos/${getUsername()}/${repoName}/pages`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `token ${token}`,
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/vnd.github.v3+json'
+                },
+                body: JSON.stringify({
+                    source: {
+                        branch: "main",
+                        path: "/"
+                    }
+                })
+            })
+            .then(response => {
+                if (!response.ok) {
+                    return response.json().then(errData => {
+                        throw new Error(errData.message || 'Failed to enable GitHub Pages');
+                    });
+                }
+                return response.json();
+            })
+            .then(data => {
+                // GitHub API returns 201 but doesn't include URL immediately
+                // We'll construct the URL ourselves
+                const pagesUrl = `https://${getUsername()}.github.io/${repoName}/`;
+                showStatus(`GitHub Pages enabled! Your site will be available at: <a href="${pagesUrl}" target="_blank">${pagesUrl}</a>`, 'success', statusElement);
+                return pagesUrl;
+            })
+            .catch(error => {
+                showError(`Error enabling GitHub Pages: ${error.message}. You can try manually enabling it in your repository settings.`, statusElement);
+                throw error;
+            });
+        }
+
+        // Deploy the site as a GitHub Pages site
+        function deploySite() {
+            const repoName = document.getElementById('repo-name').value.trim();
+            if (!repoName) {
+                showError("Please create a repository first!");
+                return;
+            }
+            
+            // Show loading state
+            const deployBtn = document.getElementById('deploy-btn');
+            deployBtn.disabled = true;
+            deployBtn.textContent = 'Deploying...';
+            
+            enableGitHubPages(repoName)
+                .catch(error => {
+                    // Error already handled in enableGitHubPages
+                })
+                .finally(() => {
+                    deployBtn.disabled = false;
+                    deployBtn.textContent = 'Deploy Website';
+                });
+        }
+
+        // Sign out by clearing the token
+        function signOut() {
+            localStorage.removeItem("github-token");
+            document.getElementById('github-token').value = '';
+            document.getElementById('repo-name').value = '';
+            document.getElementById('repo-section').classList.add('hidden');
+            document.getElementById('auth-section').classList.remove('hidden');
+            document.getElementById('deploy-btn').disabled = true;
+            clearMessages();
+        }
+
+        // Helper function to get username from token
+        function getUsername() {
+            const token = localStorage.getItem("github-token");
+            // The token isn't JWT, so we can't decode it. 
+            // In a real app, you'd store the username after auth or make another API call
+            // For this demo, we'll prompt the user to enter it
+            const username = prompt("Please enter your GitHub username:");
+            return username || 'username';
+        }
+
+        // Helper function to show error messages
+        function showError(message, element = document.getElementById('error-message')) {
+            element.innerHTML = message;
+            element.classList.remove('hidden', 'success', 'info');
+            element.classList.add('error');
+        }
+
+        // Helper function to show status messages
+        function showStatus(message, type = 'info', element = document.getElementById('status-message')) {
+            element.innerHTML = message;
+            element.classList.remove('hidden', 'error', 'success', 'info');
+            element.classList.add(type);
+            element.classList.remove('hidden');
+        }
+
+        // Helper function to clear all messages
+        function clearMessages() {
+            document.getElementById('error-message').classList.add('hidden');
+            document.getElementById('status-message').classList.add('hidden');
+        }
+    </script>
+</body>
+</html>
