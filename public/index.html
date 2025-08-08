@@ -1,0 +1,409 @@
+<!-- public/index.html -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Advanced Chess — Stockfish + PeerServer</title>
+
+<link rel="stylesheet" href="https://unpkg.com/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
+
+<style>
+  :root{
+    --size:64px; --accent:#0b6b6b; --muted:#51666b; --card:#ffffff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;background:linear-gradient(180deg,#f7fcff,#eef6f7);color:#102027}
+  .container{max-width:1080px;margin:18px auto;display:grid;grid-template-columns:1fr 360px;gap:18px;padding:8px}
+  .card{background:var(--card);border-radius:12px;padding:14px;box-shadow:0 8px 24px rgba(2,18,21,0.06)}
+  h1{margin:0 0 12px 0;font-size:18px}
+  .controls{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+  button,select,input{padding:8px 10px;border-radius:10px;border:0;background:var(--accent);color:#fff;cursor:pointer}
+  button.ghost{background:#f1f1f1;color:#111}
+  #board{width:calc(var(--size)*8);margin:10px auto;border-radius:10px}
+  .status{display:flex;justify-content:space-between;align-items:center;margin-top:10px}
+  .history{height:320px;overflow:auto;border-radius:10px;padding:8px;border:1px solid #eee;background:#fbfcfd;font-size:13px}
+  .muted{color:var(--muted)}
+  /* pop UI */
+  .top-bar{display:flex;justify-content:space-between;align-items:center}
+  .engine-bubble{display:inline-flex;align-items:center;gap:8px;padding:6px 10px;border-radius:999px;background:#e6fffb;color:#064;box-shadow:0 6px 16px rgba(2,18,21,0.04)}
+  .thinking{display:inline-block;width:10px;height:10px;border-radius:50%;background:#ff7a00;animation:blink 1s infinite}
+  @keyframes blink{0%{opacity:1}50%{opacity:.25}100%{opacity:1}}
+  .small{font-size:13px;padding:6px 8px}
+  @media(max-width:980px){.container{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <div class="top-bar">
+        <h1>Advanced Chess — Stockfish + PeerServer</h1>
+        <div class="engine-bubble" id="engineBubble">Engine: <span id="stockStatus">loading</span></div>
+      </div>
+
+      <div class="controls">
+        <button id="modeBtn">Mode: Local PvP</button>
+        <select id="aiDepth" class="small">
+          <option value="4">Depth 4</option><option value="6">Depth 6</option>
+          <option value="10" selected>Depth 10</option><option value="14">Depth 14</option>
+        </select>
+        <button id="undo" class="ghost" disabled>Undo</button>
+        <button id="restart" class="ghost">Restart</button>
+        <button id="export" class="ghost">Export PGN</button>
+        <button id="import" class="ghost">Import PGN</button>
+        <div style="flex:1"></div>
+        <button id="resign" class="ghost">Resign</button>
+      </div>
+
+      <div id="board"></div>
+
+      <div class="status">
+        <div>Turn: <strong id="turn">White</strong> <span id="gameStatus" class="muted"></span></div>
+        <div><button id="onlinePanel" class="ghost">Online</button></div>
+      </div>
+
+      <div style="margin-top:12px">
+        <div class="muted">Move history & PGN</div>
+        <div id="history" class="history"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 style="font-size:15px;margin:0 0 8px 0">Online & Engine</h2>
+
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <button id="createPeer" class="small ghost">Create Peer</button>
+        <button id="connectPeer" class="small ghost">Connect</button>
+      </div>
+
+      <div class="muted">Your Peer ID</div>
+      <input id="myId" readonly style="width:100%;margin-bottom:8px"/>
+
+      <div class="muted">Remote Peer ID</div>
+      <input id="remoteId" placeholder="paste peer id" style="width:100%;margin-bottom:8px"/>
+
+      <div style="display:flex;gap:8px">
+        <button id="doConnect" class="small">Connect</button>
+        <button id="closeConn" class="small ghost">Close</button>
+      </div>
+
+      <div id="peerStatus" class="muted" style="margin-top:8px">Not connected</div>
+
+      <hr style="margin:12px 0"/>
+
+      <div class="muted">PGN Import</div>
+      <textarea id="pgnInput" placeholder="Paste PGN here" style="margin-top:6px"></textarea>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button id="doImport" class="small ghost">Import PGN</button>
+        <button id="clearHistory" class="small ghost">Clear</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- libs: chessboard.js visuals, chess.js rules, peerjs client -->
+  <script src="https://unpkg.com/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+  <script src="https://unpkg.com/peerjs@1.5.5/dist/peerjs.min.js"></script>
+
+  <script>
+  // ---------- CONFIG: prefer local server endpoints if available ----------
+  const BASE = window.location.origin;                // when running via server docker this should point to server
+  const STOCKFISH_LOCAL = BASE + '/engine/stockfish.js';
+  const STOCKFISH_WASM_LOCAL = BASE + '/engine/stockfish.wasm';
+  const PEERJS_SERVER = { host: location.hostname, port: location.port || (location.protocol === 'https:' ? 443 : 80), path: '/peerjs' };
+
+  // CDN fallbacks if no local engine available (useful for CodePen)
+  const STOCKFISH_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/stockfish.js/10.0.2/stockfish.js';
+  const USE_LOCAL_ENGINE = true; // runtime check attempts local; will fallback to CDN if worker creation fails
+
+  // ---------- CORE game objects ----------
+  const game = new Chess();
+  let boardUi = null;
+  let undoStack = [];
+  let mode = 'pvp'; // 'pvp' | 'ai' | 'online'
+  let stockfishWorker = null, useStockfish = false;
+  let peer = null, conn = null;
+
+  // DOM
+  const boardEl = document.getElementById('board');
+  const historyEl = document.getElementById('history');
+  const turnEl = document.getElementById('turn');
+  const gameStatus = document.getElementById('gameStatus');
+  const stockStatus = document.getElementById('stockStatus');
+  const peerStatus = document.getElementById('peerStatus');
+
+  // init chessboard.js
+  function initBoardUI(){
+    if(boardUi && boardUi.destroy) boardUi.destroy();
+    boardUi = Chessboard(boardEl, {
+      draggable: true,
+      position: game.fen(),
+      pieceTheme: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png',
+      onDragStart: onDragStart,
+      onDrop: onDrop,
+      onSnapEnd: onSnapEnd
+    });
+    window.addEventListener('resize', ()=>{ try{ boardUi.resize(); }catch(e){} });
+  }
+
+  function onDragStart(source, piece, position, orientation){
+    if(game.game_over()) return false;
+    if((game.turn() === 'w' && piece[0] !== 'w') || (game.turn() === 'b' && piece[0] !== 'b')) return false;
+    return true;
+  }
+
+  function onDrop(source, target){
+    // save fen for undo
+    undoStack.push(game.fen());
+    document.getElementById('undo').disabled = false;
+
+    // default promotion to queen
+    const move = game.move({ from: source, to: target, promotion: 'q' });
+    if(move === null){
+      undoStack.pop();
+      return 'snapback';
+    }
+    boardUi.position(game.fen());
+    updateHistory();
+    updateStatus();
+    highlightMove(move);
+
+    // send to peer if online
+    if(mode === 'online' && conn && conn.open){
+      try{ conn.send({ type:'move', san: move.san, uci: move.from + move.to + (move.promotion||'') }); }catch(e){}
+    }
+
+    // if AI mode and it's engine's turn
+    if(mode === 'ai' && game.turn() === 'b') setTimeout(requestStockfishMove, 140);
+  }
+
+  function onSnapEnd(){ boardUi.position(game.fen()); }
+
+  function highlightMove(move){
+    // clear and add lastmove style to squares using chessboard dom class names
+    document.querySelectorAll('#board .square-55d63').forEach(s=> s.classList.remove('square-lastmove'));
+    const fromEl = document.querySelector('#board .square-55d63[data-square="'+move.from+'"]');
+    const toEl   = document.querySelector('#board .square-55d63[data-square="'+move.to+'"]');
+    if(fromEl) fromEl.classList.add('square-lastmove');
+    if(toEl) toEl.classList.add('square-lastmove');
+  }
+
+  function updateHistory(){
+    historyEl.innerHTML = game.pgn({ max_width: 80, newline_char: '\n' }).replace(/\n/g, '<br/>');
+  }
+  function updateStatus(){
+    turnEl.textContent = game.turn() === 'w' ? 'White' : 'Black';
+    let s = '';
+    if(game.in_checkmate()) s = ' — Checkmate';
+    else if(game.in_stalemate()) s = ' — Stalemate';
+    else if(game.in_draw()) s = ' — Draw';
+    else if(game.in_check()) s = ' — Check';
+    gameStatus.textContent = s;
+  }
+
+  // undo / restart / export / import
+  document.getElementById('undo').addEventListener('click', ()=>{
+    if(!undoStack.length) return;
+    const fen = undoStack.pop();
+    game.load(fen);
+    boardUi.position(game.fen());
+    updateHistory(); updateStatus();
+    document.getElementById('undo').disabled = undoStack.length===0;
+  });
+  document.getElementById('restart').addEventListener('click', ()=>{
+    game.reset(); undoStack=[]; boardUi.position(game.fen()); updateHistory(); updateStatus();
+    document.getElementById('undo').disabled = true;
+  });
+  document.getElementById('export').addEventListener('click', ()=>{
+    const pgn = game.pgn({ max_width: 80, newline_char: '\n' });
+    navigator.clipboard?.writeText(pgn).then(()=>alert('PGN copied'), ()=>console.log(pgn));
+  });
+  document.getElementById('import').addEventListener('click', ()=>{
+    const txt = prompt('Paste full PGN');
+    if(!txt) return;
+    const ok = game.load_pgn(txt);
+    if(!ok){ alert('Invalid PGN'); return; }
+    undoStack=[]; boardUi.position(game.fen()); updateHistory(); updateStatus();
+    document.getElementById('undo').disabled = true;
+  });
+
+  // resign button
+  document.getElementById('resign').addEventListener('click', ()=>{
+    if(confirm('Resign the game?')){
+      const winner = game.turn()==='w' ? 'Black' : 'White';
+      alert('Resigned. ' + winner + ' wins.');
+      // reset
+      game.reset(); undoStack=[]; boardUi.position(game.fen()); updateHistory(); updateStatus();
+    }
+  });
+
+  // mode / ai depth
+  document.getElementById('modeBtn').addEventListener('click', ()=>{
+    if(mode === 'pvp'){ mode = 'ai'; document.getElementById('modeBtn').textContent = 'Mode: vs Stockfish (Black)'; if(game.turn()==='b') requestStockfishMove(); }
+    else { mode = 'pvp'; document.getElementById('modeBtn').textContent = 'Mode: Local PvP'; }
+  });
+
+  // ---------------- Stockfish worker (try local, fallback CDN) ----------------
+  async function initStockfish(){
+    let workerUrlLocal = STOCKFISH_LOCAL;
+    const depthSel = document.getElementById('aiDepth');
+
+    function tryCreateWorker(url){
+      try {
+        const w = new Worker(url);
+        w.onmessage = handleSFMessage;
+        return w;
+      } catch(e){
+        console.warn('worker creation failed for', url, e);
+        return null;
+      }
+    }
+
+    // prefer local hosted worker (engine files under /engine). If fails, fallback to CDN
+    let w = null;
+    if(USE_LOCAL_ENGINE){
+      w = tryCreateWorker(STOCKFISH_LOCAL);
+    }
+    if(!w) w = tryCreateWorker(STOCKFISH_CDN);
+    if(!w){ stockStatus.textContent = 'unavailable'; useStockfish=false; return; }
+    stockfishWorker = w;
+    useStockfish = true;
+    stockStatus.textContent = 'ready';
+    // initialize engine
+    stockfishWorker.postMessage('uci');
+
+    function handleSFMessage(ev){
+      const txt = ev.data || '';
+      if(typeof txt !== 'string') return;
+      if(txt.startsWith('uciok')) stockStatus.textContent = 'ready (uci)';
+      if(txt.startsWith('bestmove')){
+        const parts = txt.split(' ');
+        const bm = parts[1];
+        if(bm && bm.length>=4){
+          const from = bm.slice(0,2), to = bm.slice(2,4), promo = bm.length>4 ? bm[4] : undefined;
+          const mv = game.move({ from, to, promotion: promo ? promo.toLowerCase() : undefined });
+          if(mv){
+            boardUi.position(game.fen()); updateHistory(); updateStatus(); highlightMove(mv);
+            // send to peer if online
+            if(mode==='online' && conn && conn.open){
+              try{ conn.send({ type:'move', san: mv.san, uci: mv.from + mv.to + (mv.promotion||'') }); }catch(e){}
+            }
+          }
+        }
+      }
+    }
+  }
+
+  function requestStockfishMove(){
+    if(!useStockfish || !stockfishWorker){
+      const moves = game.moves();
+      if(moves.length){
+        const mv = moves[Math.floor(Math.random()*moves.length)];
+        game.move(mv);
+        boardUi.position(game.fen()); updateHistory(); updateStatus();
+      }
+      return;
+    }
+    const fen = game.fen();
+    stockStatus.textContent = 'thinking...';
+    stockfishWorker.postMessage('position fen ' + fen);
+    const depth = parseInt(document.getElementById('aiDepth').value,10) || 10;
+    stockfishWorker.postMessage('go depth ' + depth);
+    // small UI pulse
+    setTimeout(()=>stockStatus.textContent = 'thinking...', 50);
+  }
+
+  // ---------------- PeerJS (connect to local server if available, otherwise unpkg peerjs cloud) ----------------
+  const USE_LOCAL_PEER = true; // attempt local /peerjs first
+  async function initPeer(){
+    // try local server by calling /peerjs (we will create Peer with host/port/path when local server exists)
+    let peerOpts = null;
+    try {
+      // if server responded on /health then use local origin peer server
+      const resp = await fetch('/health', { method:'GET' });
+      if(resp.ok){ // local server available
+        peerOpts = { host: location.hostname, port: location.port || (location.protocol === 'https:' ? 443 : 80), path: '/peerjs' };
+      }
+    } catch(e){ /* ignore */ }
+
+    // fallback: let PeerJS connect to cloud default (no options)
+    let p;
+    try {
+      if(peerOpts) p = new Peer(undefined, peerOpts);
+      else p = new Peer();
+    } catch(e){
+      console.warn('peer creation failed', e);
+      p = new Peer();
+    }
+    peer = p;
+    peer.on('open', id => { document.getElementById('myId').value = id; peerStatus.textContent = 'Peer ready: ' + id; });
+    peer.on('connection', c => {
+      conn = c;
+      setupConnHandlers();
+    });
+    peer.on('error', err => { peerStatus.textContent = 'Peer error'; console.warn(err); });
+  }
+
+  function setupConnHandlers(){
+    if(!conn) return;
+    peerStatus.textContent = 'Connected: ' + conn.peer;
+    mode = 'online';
+    document.getElementById('modeBtn').textContent = 'Mode: Online (peer)';
+    conn.on('data', msg => {
+      try {
+        if(msg && msg.type === 'move'){
+          // try SAN
+          let ok=false;
+          if(msg.san){
+            const res = game.move(msg.san, { sloppy: true });
+            if(res){ ok=true; boardUi.position(game.fen()); updateHistory(); updateStatus(); highlightMove(res); }
+          }
+          if(!ok && msg.uci && /^[a-h][1-8][a-h][1-8][qrbn]?$/.test(msg.uci)){
+            const from = msg.uci.slice(0,2), to=msg.uci.slice(2,4), promo = msg.uci.length>4 ? msg.uci[4] : undefined;
+            const res = game.move({ from, to, promotion: promo ? promo.toLowerCase() : undefined });
+            if(res){ boardUi.position(game.fen()); updateHistory(); updateStatus(); highlightMove(res); }
+          }
+        }
+      } catch(e){ console.warn('incoming move error', e); }
+    });
+    conn.on('close', ()=> { peerStatus.textContent = 'Connection closed'; mode='pvp'; document.getElementById('modeBtn').textContent='Mode: Local PvP'; });
+  }
+
+  document.getElementById('createPeer').addEventListener('click', ()=> {
+    if(!peer) initPeer();
+    else { document.getElementById('myId').value = peer.id || ''; }
+  });
+  document.getElementById('doConnect').addEventListener('click', ()=> {
+    const remote = document.getElementById('remoteId').value.trim();
+    if(!remote){ alert('Paste remote ID'); return; }
+    if(!peer) initPeer();
+    conn = peer.connect(remote);
+    conn.on('open', setupConnHandlers);
+    conn.on('error', e=>peerStatus.textContent='Conn error');
+  });
+  document.getElementById('closeConn').addEventListener('click', ()=> {
+    if(conn) conn.close();
+    if(peer) peer.destroy();
+    conn = null; peer = null; peerStatus.textContent = 'Not connected'; document.getElementById('myId').value='';
+    mode='pvp'; document.getElementById('modeBtn').textContent='Mode: Local PvP';
+  });
+
+  // PGN area import
+  document.getElementById('doImport').addEventListener('click', ()=>{
+    const txt = document.getElementById('pgnInput').value;
+    if(!txt) return;
+    const ok = game.load_pgn(txt);
+    if(!ok){ alert('Invalid PGN'); return; }
+    undoStack=[]; boardUi.position(game.fen()); updateHistory(); updateStatus(); document.getElementById('undo').disabled=true;
+  });
+  document.getElementById('clearHistory').addEventListener('click', ()=>{ historyEl.innerHTML=''; });
+
+  // init everything
+  initBoardUI();
+  updateHistory();
+  updateStatus();
+  initStockfish();   // attempts worker from /engine first, then CDN fallback
+  initPeer();        // creates Peer (local peer server if available, otherwise cloud)
+  </script>
+</body>
+</html>
