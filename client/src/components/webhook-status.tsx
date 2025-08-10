@@ -1,192 +1,144 @@
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 
-interface TimerFormProps {
+interface WebhookStatusProps {
   webhookUrl: string;
-  onWebhookUrlChange: (url: string) => void;
+  lastTest: Date | null;
+  onTest: (date: Date) => void;
 }
 
-export function TimerForm({ webhookUrl, onWebhookUrlChange }: TimerFormProps) {
-  const [description, setDescription] = useState("");
-  const [hours, setHours] = useState(0);
-  const [minutes, setMinutes] = useState(0);
-  const [seconds, setSeconds] = useState(0);
-  const [pingEveryone, setPingEveryone] = useState(true);
-  
+export function WebhookStatus({ webhookUrl, lastTest, onTest }: WebhookStatusProps) {
+  const [webhookStatus, setWebhookStatus] = useState<"unknown" | "connected" | "failed">("unknown");
   const { toast } = useToast();
-  const queryClient = useQueryClient();
 
-  const createTimerMutation = useMutation({
-    mutationFn: async (data: any) => {
-      const response = await apiRequest("POST", "/api/timers", data);
+  const testWebhookMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest("POST", "/api/webhooks/test", {
+        webhookUrl
+      });
       return response.json();
     },
-    onSuccess: () => {
-      toast({
-        title: "Timer Created",
-        description: "Your timer has been started successfully and webhook is ready.",
-      });
-      // Reset form
-      setDescription("");
-      setHours(0);
-      setMinutes(0);
-      setSeconds(0);
-      // Invalidate queries to refresh timer list
-      queryClient.invalidateQueries({ queryKey: ["/api/timers"] });
+    onSuccess: (data) => {
+      if (data.success) {
+        setWebhookStatus("connected");
+        onTest(new Date());
+        toast({
+          title: "Webhook Test Successful",
+          description: "Your Discord webhook is working correctly!",
+        });
+      } else {
+        setWebhookStatus("failed");
+        toast({
+          title: "Webhook Test Failed",
+          description: "Unable to send test message to Discord webhook",
+          variant: "destructive",
+        });
+      }
     },
     onError: (error: any) => {
+      setWebhookStatus("failed");
       toast({
-        title: "Error",
-        description: error.message || "Failed to create timer",
+        title: "Webhook Test Error",
+        description: error.message || "Failed to test webhook",
         variant: "destructive",
       });
     }
   });
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    const totalSeconds = hours * 3600 + minutes * 60 + seconds;
-    
-    if (totalSeconds === 0) {
-      toast({
-        title: "Invalid Duration",
-        description: "Please set a duration greater than 0 seconds",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    if (!description.trim()) {
-      toast({
-        title: "Missing Description",
-        description: "Please enter a description for your timer",
-        variant: "destructive",
-      });
-      return;
-    }
-
+  const handleTestWebhook = () => {
     if (!webhookUrl.trim()) {
       toast({
         title: "Missing Webhook URL",
-        description: "Please enter a Discord webhook URL",
+        description: "Please enter a Discord webhook URL first",
         variant: "destructive",
       });
       return;
     }
 
-    createTimerMutation.mutate({
-      description: description.trim(),
-      durationSeconds: totalSeconds,
-      webhookUrl: webhookUrl.trim(),
-      pingEveryone,
-    });
+    testWebhookMutation.mutate();
+  };
+
+  const formatLastTest = (date: Date | null): string => {
+    if (!date) return "Never";
+    
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMins / 60);
+
+    if (diffMins < 1) return "Just now";
+    if (diffMins < 60) return `${diffMins} minute${diffMins === 1 ? '' : 's'} ago`;
+    if (diffHours < 24) return `${diffHours} hour${diffHours === 1 ? '' : 's'} ago`;
+    return date.toLocaleDateString();
+  };
+
+  const getStatusColor = () => {
+    switch (webhookStatus) {
+      case "connected":
+        return "bg-green-100 text-green-800";
+      case "failed":
+        return "bg-red-100 text-red-800";
+      default:
+        return "bg-gray-100 text-gray-800";
+    }
+  };
+
+  const getStatusText = () => {
+    switch (webhookStatus) {
+      case "connected":
+        return "Connected";
+      case "failed":
+        return "Failed";
+      default:
+        return "Unknown";
+    }
+  };
+
+  const getStatusDot = () => {
+    switch (webhookStatus) {
+      case "connected":
+        return "bg-green-400";
+      case "failed":
+        return "bg-red-400";
+      default:
+        return "bg-gray-400";
+    }
   };
 
   return (
-    <Card className="bg-white rounded-xl shadow-sm border border-slate-200">
+    <Card className="bg-white rounded-xl shadow-sm border border-slate-200 mt-6">
       <CardContent className="p-6">
-        <div className="flex items-center space-x-2 mb-6">
-          <i className="fas fa-plus-circle text-blue-500"></i>
-          <h2 className="text-lg font-semibold text-slate-900">Create Timer</h2>
+        <div className="flex items-center space-x-2 mb-4">
+          <i className="fab fa-discord text-discord"></i>
+          <h3 className="text-lg font-semibold text-slate-900">Webhook Status</h3>
         </div>
         
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <Label className="block text-sm font-medium text-slate-700 mb-2">
-              Timer Description
-            </Label>
-            <Input 
-              type="text" 
-              placeholder="e.g. Team meeting reminder"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
-              required
-            />
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-slate-600">Connection</span>
+            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor()}`}>
+              <div className={`w-1.5 h-1.5 rounded-full mr-1.5 ${getStatusDot()}`}></div>
+              {getStatusText()}
+            </span>
           </div>
-          
-          <div className="grid grid-cols-3 gap-3">
-            <div>
-              <Label className="block text-sm font-medium text-slate-700 mb-2">Hours</Label>
-              <Input 
-                type="number" 
-                min="0" 
-                max="23" 
-                placeholder="0"
-                value={hours || ""}
-                onChange={(e) => setHours(parseInt(e.target.value) || 0)}
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors text-center"
-              />
-            </div>
-            <div>
-              <Label className="block text-sm font-medium text-slate-700 mb-2">Minutes</Label>
-              <Input 
-                type="number" 
-                min="0" 
-                max="59" 
-                placeholder="0"
-                value={minutes || ""}
-                onChange={(e) => setMinutes(parseInt(e.target.value) || 0)}
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors text-center"
-              />
-            </div>
-            <div>
-              <Label className="block text-sm font-medium text-slate-700 mb-2">Seconds</Label>
-              <Input 
-                type="number" 
-                min="0" 
-                max="59" 
-                placeholder="0"
-                value={seconds || ""}
-                onChange={(e) => setSeconds(parseInt(e.target.value) || 0)}
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors text-center"
-              />
-            </div>
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-slate-600">Last Test</span>
+            <span className="text-xs text-slate-500">{formatLastTest(lastTest)}</span>
           </div>
-          
-          <div>
-            <Label className="block text-sm font-medium text-slate-700 mb-2">
-              Discord Webhook URL
-            </Label>
-            <Input 
-              type="url" 
-              placeholder="https://discord.com/api/webhooks/..."
-              value={webhookUrl}
-              onChange={(e) => onWebhookUrlChange(e.target.value)}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
-              required
-            />
-            <p className="text-xs text-slate-500 mt-1">Get this from your Discord server settings</p>
-          </div>
-          
-          <div className="flex items-center space-x-2">
-            <Checkbox 
-              id="ping-everyone" 
-              checked={pingEveryone}
-              onCheckedChange={(checked) => setPingEveryone(!!checked)}
-            />
-            <Label htmlFor="ping-everyone" className="text-sm text-slate-700">
-              Ping @everyone when timer expires
-            </Label>
-          </div>
-          
           <Button 
-            type="submit" 
-            disabled={createTimerMutation.isPending}
-            className="w-full bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors font-medium"
+            onClick={handleTestWebhook}
+            disabled={testWebhookMutation.isPending || !webhookUrl.trim()}
+            className="w-full text-discord border border-discord bg-transparent hover:bg-discord hover:text-white transition-colors text-sm font-medium"
+            variant="outline"
           >
-            <i className="fas fa-play mr-2"></i>
-            {createTimerMutation.isPending ? "Creating..." : "Start Timer"}
+            <i className="fas fa-flask mr-2"></i>
+            {testWebhookMutation.isPending ? "Testing..." : "Test Webhook"}
           </Button>
-        </form>
+        </div>
       </CardContent>
     </Card>
   );
