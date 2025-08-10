@@ -1,192 +1,243 @@
-import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Card, CardContent } from "@/components/ui/card";
+import { useState, useEffect } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 
-interface TimerFormProps {
-  webhookUrl: string;
-  onWebhookUrlChange: (url: string) => void;
-}
+const TIMEZONES = [
+  { value: "UTC", label: "UTC - Coordinated Universal Time" },
+  { value: "America/New_York", label: "EST/EDT - Eastern Time" },
+  { value: "America/Chicago", label: "CST/CDT - Central Time" },
+  { value: "America/Denver", label: "MST/MDT - Mountain Time" },
+  { value: "America/Los_Angeles", label: "PST/PDT - Pacific Time" },
+  { value: "Europe/London", label: "GMT/BST - London" },
+  { value: "Europe/Paris", label: "CET/CEST - Paris" },
+  { value: "Europe/Berlin", label: "CET/CEST - Berlin" },
+  { value: "Europe/Rome", label: "CET/CEST - Rome" },
+  { value: "Asia/Tokyo", label: "JST - Japan" },
+  { value: "Asia/Shanghai", label: "CST - China" },
+  { value: "Asia/Kolkata", label: "IST - India" },
+  { value: "Australia/Sydney", label: "AEST/AEDT - Sydney" },
+];
 
-export function TimerForm({ webhookUrl, onWebhookUrlChange }: TimerFormProps) {
-  const [description, setDescription] = useState("");
-  const [hours, setHours] = useState(0);
-  const [minutes, setMinutes] = useState(0);
-  const [seconds, setSeconds] = useState(0);
-  const [pingEveryone, setPingEveryone] = useState(true);
-  
+export function TimezoneClock() {
+  const [currentTime, setCurrentTime] = useState(new Date());
+  const [selectedTimezone, setSelectedTimezone] = useState("UTC");
+  const [alarmTime, setAlarmTime] = useState("");
+  const [alarmDescription, setAlarmDescription] = useState("");
+  const [webhookUrl, setWebhookUrl] = useState("");
+
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  const createTimerMutation = useMutation({
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 1000);
+
+    // Detect user's timezone
+    const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const matchingTz = TIMEZONES.find(tz => tz.value === userTimezone);
+    if (matchingTz) {
+      setSelectedTimezone(userTimezone);
+    }
+
+    return () => clearInterval(timer);
+  }, []);
+
+  const createAlarmMutation = useMutation({
     mutationFn: async (data: any) => {
       const response = await apiRequest("POST", "/api/timers", data);
       return response.json();
     },
     onSuccess: () => {
       toast({
-        title: "Timer Created",
-        description: "Your timer has been started successfully and webhook is ready.",
+        title: "Alarm Set",
+        description: "Your alarm timer has been created successfully.",
       });
-      // Reset form
-      setDescription("");
-      setHours(0);
-      setMinutes(0);
-      setSeconds(0);
-      // Invalidate queries to refresh timer list
+      setAlarmTime("");
+      setAlarmDescription("");
       queryClient.invalidateQueries({ queryKey: ["/api/timers"] });
     },
     onError: (error: any) => {
       toast({
-        title: "Error",
-        description: error.message || "Failed to create timer",
+        title: "Failed to Set Alarm",
+        description: error.message || "Unable to create alarm timer",
         variant: "destructive",
       });
     }
   });
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const formatTimeInTimezone = (date: Date, timezone: string) => {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+    }).format(date);
+  };
+
+  const formatDateInTimezone = (date: Date, timezone: string) => {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    }).format(date);
+  };
+
+  const handleSetAlarm = () => {
+    if (!alarmTime || !alarmDescription.trim() || !webhookUrl.trim()) {
+      toast({
+        title: "Missing Information",
+        description: "Please fill in all alarm details including webhook URL.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Parse the alarm time
+    const [hours, minutes] = alarmTime.split(':').map(Number);
+    const alarmDate = new Date();
     
-    const totalSeconds = hours * 3600 + minutes * 60 + seconds;
+    // Convert to selected timezone
+    const now = new Date();
+    const currentTimeInTz = new Date(now.toLocaleString("en-US", { timeZone: selectedTimezone }));
     
-    if (totalSeconds === 0) {
+    alarmDate.setHours(hours, minutes, 0, 0);
+    
+    // If alarm time has passed today, set it for tomorrow
+    if (alarmDate <= currentTimeInTz) {
+      alarmDate.setDate(alarmDate.getDate() + 1);
+    }
+
+    // Calculate duration in seconds
+    const durationMs = alarmDate.getTime() - currentTimeInTz.getTime();
+    const durationSeconds = Math.floor(durationMs / 1000);
+
+    if (durationSeconds <= 0) {
       toast({
-        title: "Invalid Duration",
-        description: "Please set a duration greater than 0 seconds",
+        title: "Invalid Time",
+        description: "Please select a future time for the alarm.",
         variant: "destructive",
       });
       return;
     }
 
-    if (!description.trim()) {
-      toast({
-        title: "Missing Description",
-        description: "Please enter a description for your timer",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    if (!webhookUrl.trim()) {
-      toast({
-        title: "Missing Webhook URL",
-        description: "Please enter a Discord webhook URL",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    createTimerMutation.mutate({
-      description: description.trim(),
-      durationSeconds: totalSeconds,
+    createAlarmMutation.mutate({
+      description: `🚨 Alarm: ${alarmDescription.trim()}`,
+      durationSeconds,
       webhookUrl: webhookUrl.trim(),
-      pingEveryone,
+      pingEveryone: true,
+      maxPings: 1,
+      customMessage: `⏰ Alarm Alert! ${alarmDescription.trim()}`,
+      priority: "high",
+      isAlarmTimer: true,
+      alarmTime: alarmDate.toISOString(),
+      userTimezone: selectedTimezone,
     });
   };
 
+  const getTimezoneAbbreviation = (timezone: string) => {
+    const tz = TIMEZONES.find(t => t.value === timezone);
+    return tz?.label.split(' - ')[0] || timezone;
+  };
+
   return (
-    <Card className="bg-white rounded-xl shadow-sm border border-slate-200">
-      <CardContent className="p-6">
-        <div className="flex items-center space-x-2 mb-6">
-          <i className="fas fa-plus-circle text-blue-500"></i>
-          <h2 className="text-lg font-semibold text-slate-900">Create Timer</h2>
+    <Card className="bg-card border-border gradient-bg">
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center space-x-2">
+          <i className="fas fa-globe-americas text-primary float-animation"></i>
+          <span>World Clock & Alarms</span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        {/* Current Time Display */}
+        <div className="text-center p-6 bg-accent rounded-lg glow-effect">
+          <div className="text-3xl font-mono font-bold text-primary mb-2">
+            {formatTimeInTimezone(currentTime, selectedTimezone)}
+          </div>
+          <div className="text-sm text-muted-foreground mb-1">
+            {formatDateInTimezone(currentTime, selectedTimezone)}
+          </div>
+          <div className="text-xs text-muted-foreground font-medium">
+            {getTimezoneAbbreviation(selectedTimezone)}
+          </div>
         </div>
-        
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <Label className="block text-sm font-medium text-slate-700 mb-2">
-              Timer Description
-            </Label>
-            <Input 
-              type="text" 
-              placeholder="e.g. Team meeting reminder"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
-              required
-            />
-          </div>
+
+        {/* Timezone Selector */}
+        <div>
+          <Label className="text-sm font-medium mb-2 block">Select Timezone</Label>
+          <Select onValueChange={setSelectedTimezone} value={selectedTimezone}>
+            <SelectTrigger>
+              <SelectValue placeholder="Choose your timezone" />
+            </SelectTrigger>
+            <SelectContent>
+              {TIMEZONES.map((tz) => (
+                <SelectItem key={tz.value} value={tz.value}>
+                  {tz.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        {/* Alarm Creator */}
+        <div className="border-t pt-6">
+          <h3 className="font-semibold mb-4 flex items-center space-x-2">
+            <i className="fas fa-bell text-primary"></i>
+            <span>Set Alarm</span>
+          </h3>
           
-          <div className="grid grid-cols-3 gap-3">
+          <div className="space-y-4">
             <div>
-              <Label className="block text-sm font-medium text-slate-700 mb-2">Hours</Label>
+              <Label className="text-sm font-medium mb-2 block">Alarm Description</Label>
               <Input 
-                type="number" 
-                min="0" 
-                max="23" 
-                placeholder="0"
-                value={hours || ""}
-                onChange={(e) => setHours(parseInt(e.target.value) || 0)}
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors text-center"
+                type="text" 
+                placeholder="e.g. Meeting with team"
+                value={alarmDescription}
+                onChange={(e) => setAlarmDescription(e.target.value)}
               />
             </div>
+
             <div>
-              <Label className="block text-sm font-medium text-slate-700 mb-2">Minutes</Label>
+              <Label className="text-sm font-medium mb-2 block">Alarm Time</Label>
               <Input 
-                type="number" 
-                min="0" 
-                max="59" 
-                placeholder="0"
-                value={minutes || ""}
-                onChange={(e) => setMinutes(parseInt(e.target.value) || 0)}
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors text-center"
+                type="time" 
+                value={alarmTime}
+                onChange={(e) => setAlarmTime(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Time will be set in {getTimezoneAbbreviation(selectedTimezone)}
+              </p>
+            </div>
+
+            <div>
+              <Label className="text-sm font-medium mb-2 block">Discord Webhook URL</Label>
+              <Input 
+                type="url" 
+                placeholder="https://discord.com/api/webhooks/..."
+                value={webhookUrl}
+                onChange={(e) => setWebhookUrl(e.target.value)}
               />
             </div>
-            <div>
-              <Label className="block text-sm font-medium text-slate-700 mb-2">Seconds</Label>
-              <Input 
-                type="number" 
-                min="0" 
-                max="59" 
-                placeholder="0"
-                value={seconds || ""}
-                onChange={(e) => setSeconds(parseInt(e.target.value) || 0)}
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors text-center"
-              />
-            </div>
+
+            <Button 
+              onClick={handleSetAlarm}
+              disabled={createAlarmMutation.isPending}
+              className="w-full glow-button sparkle-effect"
+            >
+              <i className="fas fa-alarm-clock mr-2"></i>
+              {createAlarmMutation.isPending ? "Setting Alarm..." : "Set Alarm"}
+            </Button>
           </div>
-          
-          <div>
-            <Label className="block text-sm font-medium text-slate-700 mb-2">
-              Discord Webhook URL
-            </Label>
-            <Input 
-              type="url" 
-              placeholder="https://discord.com/api/webhooks/..."
-              value={webhookUrl}
-              onChange={(e) => onWebhookUrlChange(e.target.value)}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
-              required
-            />
-            <p className="text-xs text-slate-500 mt-1">Get this from your Discord server settings</p>
-          </div>
-          
-          <div className="flex items-center space-x-2">
-            <Checkbox 
-              id="ping-everyone" 
-              checked={pingEveryone}
-              onCheckedChange={(checked) => setPingEveryone(!!checked)}
-            />
-            <Label htmlFor="ping-everyone" className="text-sm text-slate-700">
-              Ping @everyone when timer expires
-            </Label>
-          </div>
-          
-          <Button 
-            type="submit" 
-            disabled={createTimerMutation.isPending}
-            className="w-full bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors font-medium"
-          >
-            <i className="fas fa-play mr-2"></i>
-            {createTimerMutation.isPending ? "Creating..." : "Start Timer"}
-          </Button>
-        </form>
+        </div>
       </CardContent>
     </Card>
   );
